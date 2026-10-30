@@ -1,0 +1,226 @@
+name: "Build Alert Me Android APK"
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "বিল্ডের ধরন (debug অথবা release)"
+        required: true
+        default: "debug"
+        type: choice
+        options:
+          - "debug"
+          - "release"
+      zip_filename:
+        description: "ঐচ্ছিক আপলোডকৃত জিপ ফাইলের নাম"
+        required: false
+        default: "alert-me-source.zip"
+        type: string
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - "*.zip"
+      - "alert-me-source.zip"
+      - "alert-me.zip"
+      - ".github/workflows/build-apk.yml"
+      - "src/**"
+      - "android/**"
+      - "package.json"
+      - "capacitor.config.ts"
+
+jobs:
+  build:
+    name: "Android APK তৈরি"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: "১. গিট রেপোজিটরি চেকআউট"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: "২. সোর্স ও জিপ আর্কাইভ নিরাপত্তা যাচাই"
+        shell: bash
+        run: |
+          set -e
+          echo "=== সোর্স ডিসকভারি ও নিরাপত্তা যাচাই ==="
+
+          TARGET_ZIP=""
+          if [ -n "${{ github.event.inputs.zip_filename }}" ] && [ -f "${{ github.event.inputs.zip_filename }}" ]; then
+            TARGET_ZIP="${{ github.event.inputs.zip_filename }}"
+          elif [ -f "alert-me-source.zip" ]; then
+            TARGET_ZIP="alert-me-source.zip"
+          elif [ -f "alert-me.zip" ]; then
+            TARGET_ZIP="alert-me.zip"
+          else
+            FIRST_ZIP=$(find . -maxdepth 1 -name "*.zip" | head -n 1)
+            if [ -n "$FIRST_ZIP" ] && [ -f "$FIRST_ZIP" ]; then
+              TARGET_ZIP="$FIRST_ZIP"
+            fi
+          fi
+
+          if [ -n "$TARGET_ZIP" ]; then
+            echo "আর্কাইভ শনাক্ত হয়েছে: $TARGET_ZIP"
+            
+            # জিপ অখণ্ডতা পরীক্ষা
+            unzip -tq "$TARGET_ZIP" || { echo "ত্রুটি: অবৈধ বা ক্ষতিগ্রস্ত জিপ ফাইল!"; exit 1; }
+
+            # পাথ ট্রাভার্সাল এবং পরম পাথ আক্রমণ পরীক্ষা
+            if unzip -l "$TARGET_ZIP" | awk 'NR>3 {print $4}' | grep -E '(^\.\./|/\.\./|^\.\.\\|\\\.\.\\|^/|^[a-zA-Z]:)'; then
+              echo "নিরাপত্তা সতর্কতা: জিপ ফাইলের মধ্যে ক্ষতিকর পাথ বা ট্রাভার্সাল এন্ট্রি সনাক্ত হয়েছে!"
+              exit 1
+            fi
+
+            # নিরাপদ অস্থায়ী ডিরেক্টরিতে এক্সট্রাক্ট
+            TMP_DIR=$(mktemp -d)
+            unzip -q "$TARGET_ZIP" -d "$TMP_DIR"
+
+            # প্রজেক্ট রুট অনুসন্ধান (রুট ডিরেক্টরি অথবা একক সাবফোল্ডার উভয়ই সমর্থন করে)
+            PROJECT_ROOT=$(find "$TMP_DIR" -maxdepth 3 -name "package.json" -exec dirname {} \; | head -n 1)
+
+            if [ -z "$PROJECT_ROOT" ]; then
+              echo "ত্রুটি: জিপ ফাইলের মধ্যে package.json পাওয়া যায়নি!"
+              exit 1
+            fi
+
+            echo "প্রজেক্ট রুট নিশ্চিত: $PROJECT_ROOT"
+
+            # ফাইলগুলো ওয়ার্কস্পেসে সিঙ্ক (ওয়ার্কফ্লো হাইজ্যাকিং রোধে .github/workflows সম্পূর্ণ বর্জন)
+            rsync -av --exclude='.github/workflows' "$PROJECT_ROOT/" ./
+            rm -rf "$TMP_DIR"
+
+            # অতিরিক্ত সুরক্ষা: গিট রিপোজিটরির বিশ্বস্ত ওয়ার্কফ্লো নিশ্চিত রাখা
+            git checkout HEAD -- .github/workflows || true
+          else
+            echo "সরাসরি গিট রেপোজিটরির সোর্স কোড থেকে বিল্ড শুরু হচ্ছে।"
+          fi
+
+          # প্রাথমিক ফাইল যাচাই
+          test -f "package.json" || { echo "ত্রুটি: package.json অনুপস্থিত!"; exit 1; }
+          test -f "capacitor.config.ts" || { echo "ত্রুটি: capacitor.config.ts অনুপস্থিত!"; exit 1; }
+          test -d "android" || { echo "ত্রুটি: android ডিরেক্টরি অনুপস্থিত!"; exit 1; }
+
+      - name: "৩. Node.js পরিবেশ প্রস্তুতকরণ"
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+
+      - name: "৪. নোড ডিপেন্ডেন্সি ইনস্টলেশন"
+        shell: bash
+        run: |
+          if [ -f "package-lock.json" ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: "৫. টাইপস্ক্রিপ্ট ও কোড অখণ্ডতা নিরীক্ষা (Lint)"
+        shell: bash
+        run: |
+          npm run lint
+
+      - name: "৬. ওয়েব অ্যাপ প্রোডাকশন বিল্ড (Vite)"
+        shell: bash
+        run: |
+          npm run build
+          test -d "dist" || { echo "ত্রুটি: dist ডিরেক্টরি তৈরি হয়নি!"; exit 1; }
+
+      - name: "৭. Java JDK 17 প্রস্তুতকরণ"
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: "৮. অ্যান্ড্রয়েড এসডিকে ও লাইসেন্স প্রস্তুতি"
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: "৯. ক্যাপাসিটর অ্যান্ড্রয়েড সিঙ্ক"
+        shell: bash
+        run: |
+          npx cap sync android
+
+      - name: "১০. Gradle এক্সিকিউটেবল পারমিশন প্রদান"
+        shell: bash
+        run: |
+          chmod +x android/gradlew
+
+      - name: "১১. অ্যান্ড্রয়েড APK কম্পাইলেশন"
+        shell: bash
+        run: |
+          set -e
+          cd android
+
+          BUILD_MODE="${{ github.event.inputs.build_type || 'debug' }}"
+          echo "নির্বাচিত বিল্ড টাইপ: $BUILD_MODE"
+
+          if [ "$BUILD_MODE" = "release" ] && [ -n "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" ]; then
+            echo "রিলিজ কীস্টোর ডিকোড করা হচ্ছে..."
+            echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore
+
+            ./gradlew assembleRelease \
+              -Pandroid.injected.signing.store.file=app/release.keystore \
+              -Pandroid.injected.signing.store.password="${{ secrets.KEYSTORE_PASSWORD }}" \
+              -Pandroid.injected.signing.key.alias="${{ secrets.KEY_ALIAS }}" \
+              -Pandroid.injected.signing.key.password="${{ secrets.KEY_PASSWORD }}"
+
+            rm -f app/release.keystore
+          else
+            echo "ডিবাগ মোডে APK তৈরি হচ্ছে..."
+            ./gradlew assembleDebug
+          fi
+
+      - name: "১২. তৈরি হওয়া APK ফাইল যাচাই ও প্রক্রিয়াকরণ"
+        shell: bash
+        run: |
+          set -e
+          APK_PATH=$(find android/app/build/outputs/apk -type f -name "*.apk" | head -n 1)
+
+          if [ -z "$APK_PATH" ] || [ ! -f "$APK_PATH" ]; then
+            echo "ত্রুটি: কোনো APK ফাইল তৈরি হয়নি!"
+            exit 1
+          fi
+
+          FILE_SIZE=$(du -h "$APK_PATH" | cut -f1)
+          SHA256=$(sha256sum "$APK_PATH" | cut -d' ' -f1)
+
+          # স্পষ্ট নাম প্রদান
+          DEST_APK="AlertMe-latest.apk"
+          cp "$APK_PATH" "./$DEST_APK"
+
+          echo "APK_OUTPUT_PATH=$DEST_APK" >> $GITHUB_ENV
+          echo "APK_SIZE=$FILE_SIZE" >> $GITHUB_ENV
+          echo "APK_SHA256=$SHA256" >> $GITHUB_ENV
+
+          echo "=== APK সফলভাবে তৈরি হয়েছে ==="
+          echo "ফাইল: $DEST_APK ($FILE_SIZE)"
+          echo "SHA-256: $SHA256"
+
+          # GitHub Actions Summary তে প্রকাশ
+          cat << EOF >> $GITHUB_STEP_SUMMARY
+          ## 📱 Alert Me APK বিল্ড ফলাফল
+
+          - **অবস্থা**: সফলভাবে তৈরি হয়েছে
+          - **ফাইল নাম**: \`$DEST_APK\`
+          - **ফাইলের আকার**: $FILE_SIZE
+          - **SHA-256 চেকসাম**: \`$SHA256\`
+          - **অ্যাপ্লিকেশন আইডি**: \`com.alertme.antitheft\`
+
+          *নিচের 'Artifacts' সেকশন থেকে সরাসরি APK ডাউনলোড করুন।*
+          EOF
+
+      - name: "১৩. APK আর্টিফ্যাক্ট আপলোড"
+        uses: actions/upload-artifact@v4
+        with:
+          name: "AlertMe-APK"
+          path: "${{ env.APK_OUTPUT_PATH }}"
+          if-no-files-found: error
+          retention-days: 14
