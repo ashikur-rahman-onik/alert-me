@@ -67,7 +67,7 @@ jobs:
 
           if [ -n "$TARGET_ZIP" ]; then
             echo "আর্কাইভ শনাক্ত হয়েছে: $TARGET_ZIP"
-            
+
             # জিপ অখণ্ডতা পরীক্ষা
             unzip -tq "$TARGET_ZIP" || { echo "ত্রুটি: অবৈধ বা ক্ষতিগ্রস্ত জিপ ফাইল!"; exit 1; }
 
@@ -91,11 +91,11 @@ jobs:
 
             echo "প্রজেক্ট রুট নিশ্চিত: $PROJECT_ROOT"
 
-            # ফাইলগুলো ওয়ার্কস্পেসে সিঙ্ক (ওয়ার্কফ্লো হাইজ্যাকিং রোধে .github/workflows সম্পূর্ণ বর্জন)
+            # ফাইলগুলো ওয়ার্কস্পেসে সিঙ্ক
             rsync -av --exclude='.github/workflows' "$PROJECT_ROOT/" ./
             rm -rf "$TMP_DIR"
 
-            # অতিরিক্ত সুরক্ষা: গিট রিপোজিটরির বিশ্বস্ত ওয়ার্কফ্লো নিশ্চিত রাখা
+            # গিট রিপোজিটরির বিশ্বস্ত ওয়ার্কফ্লো নিশ্চিত রাখা
             git checkout HEAD -- .github/workflows || true
           else
             echo "সরাসরি গিট রেপোজিটরির সোর্স কোড থেকে বিল্ড শুরু হচ্ছে।"
@@ -110,7 +110,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: "npm"
 
       - name: "৪. নোড ডিপেন্ডেন্সি ইনস্টলেশন"
         shell: bash
