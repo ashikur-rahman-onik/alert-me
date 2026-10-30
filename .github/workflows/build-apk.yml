@@ -31,6 +31,7 @@ on:
       - "src/**"
       - "android/**"
       - "package.json"
+      - "package-lock.json"
       - "capacitor.config.ts"
 
 jobs:
@@ -111,7 +112,6 @@ jobs:
         with:
           node-version: 22
 
-
       - name: "৪. নোড ডিপেন্ডেন্সি ইনস্টলেশন"
         shell: bash
         run: |
@@ -132,16 +132,30 @@ jobs:
           npm run build
           test -d "dist" || { echo "ত্রুটি: dist ডিরেক্টরি তৈরি হয়নি!"; exit 1; }
 
-      - name: "৭. Java JDK 17 প্রস্তুতকরণ"
+      - name: "৭. Java JDK 21 প্রস্তুতকরণ"
         uses: actions/setup-java@v4
         with:
           distribution: "temurin"
-          java-version: "17"
+          java-version: "21"
 
       - name: "৮. অ্যান্ড্রয়েড এসডিকে ও লাইসেন্স প্রস্তুতি"
         shell: bash
         run: |
-          yes | sdkmanager --licenses || true
+          set -e
+          echo "=== অ্যান্ড্রয়েড এসডিকে প্রস্তুতি ==="
+          if [ -d "$ANDROID_HOME/cmdline-tools/latest/bin" ]; then
+            export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          elif [ -d "$ANDROID_HOME/tools/bin" ]; then
+            export PATH="$ANDROID_HOME/tools/bin:$PATH"
+          fi
+
+          if command -v sdkmanager >/dev/null 2>&1; then
+            yes | sdkmanager --licenses || true
+          elif [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses || true
+          else
+            echo "sdkmanager সরাসরি প্রয়োজন হয়নি, Gradle স্বয়ংক্রিয়ভাবে এসডিকে লাইসেন্স হ্যান্ডেল করবে।"
+          fi
 
       - name: "৯. ক্যাপাসিটর অ্যান্ড্রয়েড সিঙ্ক"
         shell: bash
